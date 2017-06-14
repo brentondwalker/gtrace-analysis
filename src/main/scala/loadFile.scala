@@ -6,56 +6,34 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.SparkSession._
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, DoubleType, TimestampType}
+import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, LongType, DoubleType, TimestampType}
 
 object loadFile {
   
   def main(args: Array[String]) {
     //println(args.deep.mkString("\n"))
-    if (args.length <= 1) {
+    if (args.length < 1) {
       println("usage: loadFile <infile>")
       System.exit(0)
     }
-    val infile = args(1)
+    val infile = args(0)
 
     // get a SparkSession in the currently preferred way
-    val spark = utils.createSparkSession("perCellTimeSeriesCorrelation")
+    val spark = utils.createSparkSession("gtrace-analsis")
     import spark.implicits._
     
-    // data types:
-    // https://spark.apache.org/docs/1.4.0/api/java/org/apache/spark/sql/types/DataType.html
-    val taskSchema = StructType(Array(
-    		StructField("timestamp", LongType, false),
-    		StructField("missing", IntegerType, true),
-        StructField("jobid", IntegerType, false),
-        StructField("taskix", IntegerType, false),
-        StructField("machineid", IntegerType, true),
-        StructField("evtype", IntegerType, false),
-        StructField("username", StringType, true),
-        StructField("sclass", IntegerType, false),
-        StructField("priority", IntegerType, false),
-        StructField("cpureq", DoubleType, false),
-        StructField("ramreq", DoubleType, false),
-        StructField("hdreq", DoubleType, false),
-        StructField("constraint", IntegerType, false)))
-
-    val df = spark.read
-      .option("header","true")
-      .option("sep","\t")
-      .option("nullValue","NULL")
-      .option("mode","DROPMALFORMED")
-      .schema(lSchema)
-      .csv(infile)
+    val taskdf = gtraceReader.readTaskEvents(spark, infile);
+    
 
     println("schema: ")
-    df.printSchema()
-    println("df="+df.show())
+    taskdf.printSchema()
+    println("taskdf="+taskdf.show())
 
     println("sorting...")
-    val df2 = df.sort(asc("timestamp"))
+    val taskdf2 = taskdf.sort(asc("timestamp"))
     println("done!")
     
-    df2.take(20).foreach(println)
+    taskdf2.take(20).foreach(println)
     
     spark.stop
   }
