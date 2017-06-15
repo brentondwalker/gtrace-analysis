@@ -7,6 +7,8 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.SparkSession._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, LongType, DoubleType, TimestampType}
+import org.apache.spark.storage.StorageLevel._
+
 
 object loadFile {
   
@@ -22,8 +24,9 @@ object loadFile {
     val spark = utils.createSparkSession("gtrace-analsis")
     import spark.implicits._
     
-    val taskdf = gtraceReader.readTaskEvents(spark, infile);
+    val taskdf = gtraceReader.readTaskEvents(spark, infile).persist(MEMORY_AND_DISK);
     
+    println("read in records: "+taskdf.count())
 
     println("schema: ")
     taskdf.printSchema()
@@ -34,6 +37,10 @@ object loadFile {
     println("done!")
     
     taskdf2.take(20).foreach(println)
+    
+    val taskdf3 = EventDataTransformer.transformTaskData(spark, taskdf2)
+    println("with extra columns:")
+    taskdf3.show()
     
     spark.stop
   }

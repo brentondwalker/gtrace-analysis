@@ -1,10 +1,7 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.SparkSession._
-import org.apache.spark.sql.Dataset
-import org.apache.spark.sql.Row
-import org.apache.spark.sql.functions.unix_timestamp
-import org.apache.spark.storage.StorageLevel._
-
+import org.apache.log4j.Logger
+import org.apache.log4j.Level
 
 /**
  * Some utility functions that will be convenient to factor out
@@ -14,10 +11,15 @@ import org.apache.spark.storage.StorageLevel._
 object utils {
 
   def createSparkSession(appName: String): SparkSession = {
-    return SparkSession.builder
+    val spark = SparkSession.builder
       .appName("gtrace-analysis")
       .config("LogLevel", "WARN")
       .getOrCreate()
+      
+      Logger.getLogger("org").setLevel(Level.WARN)
+      Logger.getLogger("akka").setLevel(Level.WARN)
+      
+      return spark
   }
     
 }

@@ -10,17 +10,17 @@ object gtraceReader {
 	val taskSchema = StructType(Array(
 			StructField("timestamp", LongType, false),
 			StructField("missing", IntegerType, true),
-			StructField("jobid", IntegerType, false),
-			StructField("taskix", IntegerType, false),
-			StructField("machineid", IntegerType, true),
+			StructField("jobid", LongType, false),
+			StructField("taskix", LongType, false),
+			StructField("machineid", LongType, true),
 			StructField("evtype", IntegerType, false),
 			StructField("username", StringType, true),
-			StructField("sclass", IntegerType, false),
-			StructField("priority", IntegerType, false),
-			StructField("cpureq", DoubleType, false),
-			StructField("ramreq", DoubleType, false),
-			StructField("hdreq", DoubleType, false),
-			StructField("constraint", IntegerType, false)));
+			StructField("sclass", IntegerType, true),
+			StructField("priority", IntegerType, true),
+			StructField("cpureq", DoubleType, true),
+			StructField("ramreq", DoubleType, true),
+			StructField("hdreq", DoubleType, true),
+			StructField("constraint", IntegerType, true)));
 			
 	def readTaskEvents(spark: SparkSession, filename: String): Dataset[Row] = {
 			return spark.read
