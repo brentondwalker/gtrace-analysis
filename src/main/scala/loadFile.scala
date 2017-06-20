@@ -18,29 +18,37 @@ object loadFile {
       println("usage: loadFile <infile>")
       System.exit(0)
     }
-    val infile = args(0)
+    val task_infile = args(0)
+    val job_infile = args(1)
 
     // get a SparkSession in the currently preferred way
     val spark = utils.createSparkSession("gtrace-analsis")
     import spark.implicits._
     
-    val taskdf = gtraceReader.readTaskEvents(spark, infile).persist(MEMORY_AND_DISK);
+    val task_event_df = gtraceReader.readTaskEvents(spark, task_infile).persist(MEMORY_AND_DISK);
+    println("task schema: ")
+    task_event_df.printSchema()
     
-    println("read in records: "+taskdf.count())
-
-    println("schema: ")
-    taskdf.printSchema()
-    println("taskdf="+taskdf.show())
-
-    println("sorting...")
-    val taskdf2 = taskdf.sort(asc("timestamp"))
-    println("done!")
+    val job_event_df = gtraceReader.readJobEvents(spark, job_infile).persist(MEMORY_AND_DISK);
+    println("job schema: ")
+    job_event_df.printSchema()
     
-    taskdf2.take(20).foreach(println)
+    println("read in task records: "+task_event_df.count())
+    println("read in job records: "+job_event_df.count())
+    println("taskdf="+task_event_df.show())
+    println("jobdf="+job_event_df.show())
     
-    val taskdf3 = EventDataTransformer.transformTaskData(spark, taskdf2)
-    println("with extra columns:")
-    taskdf3.show()
+    val taskdf = EventDataTransformer.transformTaskData(spark, task_event_df)
+    println("transformed task data:")
+    taskdf.show()
+    
+    val jobdf = EventDataTransformer.transformJobData(spark, job_event_df)
+    println("transformed job data:")
+    jobdf.show()
+    
+    
+    
+    Thread sleep 1000
     
     spark.stop
   }
