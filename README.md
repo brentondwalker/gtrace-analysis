@@ -4,7 +4,7 @@ spark code for analyzing google cluster traces
 # Build
 This is an sbt project.  You may need a newer version of sbt than what Ubuntu provides by default.  I am using sbt 0.13.11.
 
-To build, cd to the project director, and do: ```sbt package```
+To build, cd to the project directory, and do: ```sbt package```
 
 This will produce a jar file: `target/scala-2.11/gtrace-analysis_2.11-1.0.jar`.
 
