@@ -1,6 +1,14 @@
 /**
  * sbt --warn "run loadFile"
  * sbt --warn "run loadFile filename.txt"
+ * 
+ * **OR**
+ * 
+ * Build the project with:
+ * sbt package
+ * 
+ * Run the main:
+ * bin/spark-submit --master spark://sparkserver:7077 gtrace-analysis/target/scala-2.11/gtrace-analysis_2.11-1.0.jar task_events/part-00495-of-00500.csv.gz job_events/part-00495-of-00500.csv.gz
  */
 
 import org.apache.spark.sql.SparkSession
@@ -14,8 +22,8 @@ object loadFile {
   
   def main(args: Array[String]) {
     //println(args.deep.mkString("\n"))
-    if (args.length < 1) {
-      println("usage: loadFile <infile>")
+    if (args.length < 2) {
+      println("usage: loadFile <task_file(s)> <job_trace_file(s)>")
       System.exit(0)
     }
     val task_infile = args(0)
@@ -46,7 +54,10 @@ object loadFile {
     println("transformed job data:")
     jobdf.show()
     
-    
+    val dd = taskdf.select("size").persist(MEMORY_AND_DISK);
+    val ddc = dd.collect()
+    ddc(1).getLong(0)
+    val ddcl = ddc.map(x => x.getLong(0))
     
     Thread sleep 1000
     
