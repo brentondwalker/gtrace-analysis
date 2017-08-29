@@ -41,10 +41,10 @@ val task_infile = "task_events/part-00494-of-00500.csv.gz"
 val job_infile = "job_events/part-00484-of-00500.csv.gz"
 
 val task_event_df = gtraceReader.readTaskEvents(spark, task_infile).persist(MEMORY_AND_DISK);
-println("taskdf="+task_event_df.show())
+println("task_event_df="+task_event_df.show())
 
 val job_event_df = gtraceReader.readJobEvents(spark, job_infile).persist(MEMORY_AND_DISK);
-println("jobdf="+job_event_df.show())
+println("job_event_df="+job_event_df.show())
 
 val taskdf = EventDataTransformer.transformTaskData(spark, task_event_df)
 taskdf.show()
