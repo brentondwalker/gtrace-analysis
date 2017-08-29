@@ -16,7 +16,7 @@ import org.apache.spark.sql.SparkSession._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, LongType, DoubleType, TimestampType}
 import org.apache.spark.storage.StorageLevel._
-
+import org.apache.spark.rdd.DoubleRDDFunctions
 
 object loadFile {
   
@@ -46,11 +46,11 @@ object loadFile {
     println("taskdf="+task_event_df.show())
     println("jobdf="+job_event_df.show())
     
-    val taskdf = EventDataTransformer.transformTaskData(spark, task_event_df)
+    val taskdf = EventDataTransformer.transformTaskData(spark, task_event_df, true)
     println("transformed task data:")
     taskdf.show()
     
-    val jobdf = EventDataTransformer.transformJobData(spark, job_event_df)
+    val jobdf = EventDataTransformer.transformJobData(spark, job_event_df, true)
     println("transformed job data:")
     jobdf.show()
     
@@ -58,6 +58,11 @@ object loadFile {
     val ddc = dd.collect()
     ddc(1).getLong(0)
     val ddcl = ddc.map(x => x.getLong(0))
+    
+    val ddd = dd.map(x => x.getLong(0)).map( _.toDouble )
+    val ddh = ddd.rdd.histogram(5)
+    ddh._1.toList
+    
     
     Thread sleep 1000
     

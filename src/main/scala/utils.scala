@@ -21,7 +21,23 @@ object utils {
       
       return spark
   }
-    
+
+    def createSparkSession(appName: String, master: String): SparkSession = {
+    val spark = SparkSession.builder
+      .appName("gtrace-analysis")
+      .master(master)
+      .config("LogLevel", "WARN")
+      .getOrCreate()
+      
+      Logger.getLogger("org").setLevel(Level.WARN)
+      Logger.getLogger("akka").setLevel(Level.WARN)
+      
+      return spark
+  }
+
+  
+  
+  
 }
 
 
