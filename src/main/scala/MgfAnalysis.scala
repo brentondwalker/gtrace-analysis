@@ -21,9 +21,9 @@ object MgfAnalysis {
   /**
    * returns an array containing (username,numjobs) tuples, sorted by numjobs
    */
-  def computeTopUsers(jobds:Dataset[Row]): Array[(String,Long)] = {
+  def computeTopUsers(jobds:Dataset[Row], threshold:Long): Array[(String,Long)] = {
     val userJobCounts = jobds.groupBy("username").count().sort(desc("count"));
-    return userJobCounts.filter("count > 30000").collect().map( x => (x.getString(0), x.getLong(1)) )
+    return userJobCounts.filter("count > "+threshold).collect().map( x => (x.getString(0), x.getLong(1)) )
   }
   
   
@@ -32,11 +32,11 @@ object MgfAnalysis {
    * normalized to the given rates.  These envelope parameters can be used
    * to compute the G|G fork-join bounds.
    */
-  def computeEnvelope(spark:SparkSession, jobds:Dataset[Row], uname:String, lambda:Double, mu:Double) = {
+  def computeEnvelope(spark:SparkSession, jobds:Dataset[Row], taskds:Dataset[Row], uname:String, lambda:Double, mu:Double): ListBuffer[SigmaRho] = {
     val num_thetas = 10;
     val max_l = 2000;
     val arrivals = getNormalizedArrivals(spark, jobds, uname, lambda);
-    val services = getNormalizedServices(spark, jobds, uname, mu);
+    val services = getNormalizedServices(spark, taskds, uname, mu);
     
     val theta1 = findIntersectionTheta(spark, arrivals, services, 1)
     val theta1k = findIntersectionTheta(spark, arrivals, services, 1000)
@@ -63,7 +63,8 @@ object MgfAnalysis {
     // finally compute a bunch of feasible envelopes.  Each envelope consists of
     // (sigmaa:Double, rhoa:Double, sigmas:Double, rhos:Double, theta:Double, alpha:Double)
     // The alpha is actually computed from the other parts, but is convenient to have there.
-    var srLists = thetardd.map( theta => fitSigmaRhoLines(lags_array_arrival, lags_array_service, theta)).reduce(_ ++ _)
+    val srLists = thetardd.map( theta => fitSigmaRhoLines(lags_array_arrival, lags_array_service, theta)).reduce(_ ++ _)
+    return srLists;
   }
   
   
@@ -72,15 +73,15 @@ object MgfAnalysis {
    * bunch of feasible sigma/rho envelopes.
    */
   def fitSigmaRhoLines(lags_array_arrival:Array[Array[Double]], lags_array_service:Array[Array[Double]], theta:Double): ListBuffer[SigmaRho] = {
-    val max_l = lags_array_arrival.length
+    val max_l = Math.min(lags_array_arrival.length, lags_array_service.length)
 
     val numlines = 10
     
     val srList = ListBuffer[SigmaRho]()
     
     // first need to compute the MGFs for this theta
-    val logMgfa = Array[Double](max_l)
-    val logMgfs = Array[Double](max_l)
+    val logMgfa = Array.fill(max_l){0.0}
+    val logMgfs = Array.fill(max_l){0.0}
     var max_valid_l = 0;
 
     for ( l <- 0 until max_l ) {

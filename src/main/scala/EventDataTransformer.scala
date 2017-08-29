@@ -62,7 +62,7 @@ object EventDataTransformer {
           .sort(asc("arrive"));
      
      if (join_metadata) {
-       val jobds2 = jobds.filter("fail==0").join(df.as("job_event_ds"), $"job_event_ds.jobid" === $"jobds.jobid" && $"evtype" === 4 );
+       val jobds2 = jobds.as("jobds").filter("fail==0").join(df.as("job_event_ds"), $"job_event_ds.jobid" === $"jobds.jobid" && $"evtype" === 4 );
        return jobds2.select($"jobds.jobid", $"jobds.arrive", $"jobds.schedule", $"jobds.finish", $"jobds.fail", $"jobds.size", $"jobds.waittime", $"job_event_ds.username", $"job_event_ds.sclass");
      }
      
