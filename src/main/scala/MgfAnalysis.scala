@@ -2,12 +2,15 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.SparkSession._
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.Row
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, LongType, DoubleType, TimestampType}
 import org.apache.spark.sql.functions.udf
 import org.apache.spark.sql.functions._ // for `when`
 import org.apache.spark.storage.StorageLevel._
 import org.apache.spark.sql.expressions.Window
 import scala.collection.mutable.ListBuffer
+import scala.util.control.Breaks._
+
 
 /**
  * This will contain code to compute and analyze moment generating
@@ -32,7 +35,7 @@ object MgfAnalysis {
    * normalized to the given rates.  These envelope parameters can be used
    * to compute the G|G fork-join bounds.
    */
-  def computeEnvelope(spark:SparkSession, jobds:Dataset[Row], taskds:Dataset[Row], uname:String, lambda:Double, mu:Double): ListBuffer[SigmaRho] = {
+  def computeEnvelope(spark:SparkSession, jobds:Dataset[Row], taskds:Dataset[Row], uname:String, lambda:Double, mu:Double): RDD[ListBuffer[SigmaRho]] = {
     val num_thetas = 10;
     val max_l = 2000;
     val arrivals = getNormalizedArrivals(spark, jobds, uname, lambda);
@@ -57,13 +60,22 @@ object MgfAnalysis {
     // collect the arrival and service data for this user and compute
     // the 2D lags array at every possible lag.
     // The size of these arrays will be on the order of max_l * arrivals.length
+    println("computing arrival lags arrays...")
     val lags_array_arrival = processLagsArray(arrivals.select("interarrivalN").collect().map(r => r.getDouble(0)), max_l)
+    println("computing service lags arrays...")
     val lags_array_service = processLagsArray(services.select("sizeN").collect().map(r => r.getDouble(0)), max_l)
     
     // finally compute a bunch of feasible envelopes.  Each envelope consists of
     // (sigmaa:Double, rhoa:Double, sigmas:Double, rhos:Double, theta:Double, alpha:Double)
     // The alpha is actually computed from the other parts, but is convenient to have there.
-    val srLists = thetardd.map( theta => fitSigmaRhoLines(lags_array_arrival, lags_array_service, theta)).reduce(_ ++ _)
+    println("computing sigma-rho envelopes...")
+    val srLists = thetardd.map( theta => fitSigmaRhoLines(lags_array_arrival, lags_array_service, theta)) //.reduce(_ ++ _)  // XXX this reduce may be causing problems
+    //var srLists = ListBuffer[SigmaRho]()
+    //for ( theta <- theta_list ) {
+      //println("\nworking on theta="+theta)
+      //srLists ++= fitSigmaRhoLines(lags_array_arrival, lags_array_service, theta)
+    //}
+    
     return srLists;
   }
   
@@ -74,6 +86,7 @@ object MgfAnalysis {
    */
   def fitSigmaRhoLines(lags_array_arrival:Array[Array[Double]], lags_array_service:Array[Array[Double]], theta:Double): ListBuffer[SigmaRho] = {
     val max_l = Math.min(lags_array_arrival.length, lags_array_service.length)
+    println("max_l="+max_l)
 
     val numlines = 10
     
@@ -82,14 +95,23 @@ object MgfAnalysis {
     // first need to compute the MGFs for this theta
     val logMgfa = Array.fill(max_l){0.0}
     val logMgfs = Array.fill(max_l){0.0}
+    println("logMgfa.length="+logMgfa.length)
+
     var max_valid_l = 0;
 
+    breakable {
     for ( l <- 0 until max_l ) {
         logMgfa(l) = Math.log( lags_array_arrival(l).map( x => Math.exp(theta*x)).sum/lags_array_arrival(l).length ) / theta
         logMgfs(l) = Math.log( lags_array_service(l).map( x => Math.exp(theta*x)).sum/lags_array_service(l).length ) / theta
-        if (!(logMgfa(l).isInfinity || logMgfs(l).isInfinity)) {
-            max_valid_l = l
+        if (logMgfa(l).isInfinity || logMgfs(l).isInfinity) {
+            max_valid_l = l-1
+            break
         }
+    }}
+    println("max_valid_l="+max_valid_l)
+    if (max_valid_l <= 0) {
+      println("WARNING: max_valid_l <= 0")
+      return srList
     }
     
     // try fitting lines
@@ -101,6 +123,10 @@ object MgfAnalysis {
     
     // to keep from computing the slope of noise, compute slope over a widow of 1/10 of the data
     val lwin = Math.round(max_valid_l/10)
+    if (max_valid_l <= lwin) {
+      println("WARNING: max_valid_l <= lwin")
+      return srList
+    }
     for ( l <- 0 until (max_valid_l-lwin)) {
         var temp_rhoa = (logMgfa(l+lwin) - logMgfa(l)) / (lwin)
         min_rhoa = Math.min(temp_rhoa, min_rhoa)
@@ -110,22 +136,28 @@ object MgfAnalysis {
         min_rhos = Math.min(temp_rhos, min_rhos)
         max_rhos = Math.max(temp_rhos, max_rhos)
     }
+    println("min_rhoa="+min_rhoa+"\tmax_rhoa="+max_rhoa+"\tmin_rhos="+min_rhos+"\tmax_rhos="+max_rhos)
     
     // also require that the minimum rhoa is greater or equal to the minimum rhos
     // i.e. there is no reason to consider infeasible solutions
     min_rhoa = Math.max(min_rhoa, min_rhos)
     
+    if ((min_rhoa > max_rhoa) || (min_rhos > max_rhos)) {
+      println("WARNING: no feasible solutions here")
+      return srList
+    }
+    
     for ( is <- 0 until numlines ) {
         var rhos = min_rhos + (max_rhos - min_rhos) * ((1.0*is)/numlines)
         
         var sigmas = -1.0e99
-        for ( l <- 0 to logMgfs.length ) { sigmas = Math.max( sigmas, (logMgfs(l) - l*rhos)) }
+        for ( l <- 0 until logMgfs.length ) { sigmas = Math.max( sigmas, (logMgfs(l) - l*rhos)) }
         
         for (ia <- 1 to numlines ) {
             var rhoa = min_rhoa + (max_rhoa - min_rhoa) * ((1.0*ia)/numlines)
             
             var sigmaa = -1.0e99
-            for ( l <- 0 to logMgfa.length ) { sigmaa = Math.max( sigmaa, (l*rhos - logMgfs(l))) }
+            for ( l <- 0 until logMgfa.length ) { sigmaa = Math.max( sigmaa, (l*rhos - logMgfs(l))) }
             var alpha = Math.exp(theta*(sigmaa+sigmas)) / ( 1 - Math.exp(-theta*(rhoa-rhos)) );
             srList += SigmaRho(sigmaa, rhoa, sigmas, min_rhos, theta, alpha)
         }
