@@ -38,8 +38,8 @@ object MgfAnalysis {
   def computeEnvelope(spark:SparkSession, jobds:Dataset[Row], taskds:Dataset[Row], uname:String, lambda:Double, mu:Double): RDD[ListBuffer[SigmaRho]] = {
     val num_thetas = 10;
     val max_l = 2000;
-    val arrivals = getNormalizedArrivals(spark, jobds, uname, lambda);
-    val services = getNormalizedServices(spark, taskds, uname, mu);
+    val arrivals = getNormalizedArrivals(spark, jobds, uname, lambda).persist(MEMORY_AND_DISK);
+    val services = getNormalizedServices(spark, taskds, uname, mu).persist(MEMORY_AND_DISK);
     
     val theta1 = findIntersectionTheta(spark, arrivals, services, 1)
     val theta1k = findIntersectionTheta(spark, arrivals, services, 1000)
@@ -64,6 +64,10 @@ object MgfAnalysis {
     val lags_array_arrival = processLagsArray(arrivals.select("interarrivalN").collect().map(r => r.getDouble(0)), max_l)
     println("computing service lags arrays...")
     val lags_array_service = processLagsArray(services.select("sizeN").collect().map(r => r.getDouble(0)), max_l)
+
+    // don't need these datasets in memory anymore
+    arrivals.unpersist()
+    services.unpersist()
     
     // finally compute a bunch of feasible envelopes.  Each envelope consists of
     // (sigmaa:Double, rhoa:Double, sigmas:Double, rhos:Double, theta:Double, alpha:Double)
@@ -75,6 +79,7 @@ object MgfAnalysis {
       //println("\nworking on theta="+theta)
       //srLists ++= fitSigmaRhoLines(lags_array_arrival, lags_array_service, theta)
     //}
+    
     
     return srLists;
   }
@@ -168,6 +173,20 @@ object MgfAnalysis {
   
   
   /**
+   * given a sigma-rho envelope, an epsilon, and the parallelism, k, compute
+   * the sojourn time bounds in the G|G case for both 1 and k stages.
+   */
+  def tauQuantiles(sr:SigmaRho, eps:Double, k:Integer): (SigmaRho,(Double,Double)) = {
+    if (sr.rhoa > sr.rhos) {
+      val quantile_bound = (Math.log(eps) - Math.log(sr.alpha) - sr.theta*sr.rhos)/(-sr.theta);
+      val quantile_bound_k = (Math.log(eps) - Math.log(sr.alpha) - Math.log(k.toDouble) - sr.theta*sr.rhos)/(-sr.theta);
+      return (sr, (quantile_bound, quantile_bound_k))
+    }
+    return (sr, (0.0, 0.0))
+  }
+  
+  
+  /**
    * take the absolute arrival times, convert it to an inter-arrival process, and
    * then normalize the inter-arrival process to have a desired rate.
    */
@@ -187,6 +206,7 @@ object MgfAnalysis {
     val interArrivalsN = interArrivals.withColumn("interarrivalN", col("interarrival")/(lambda*arrivalMean)).persist(MEMORY_AND_DISK);
     val newArrivalMean = interArrivalsN.agg(avg("interarrivalN")).head().getDouble(0)
     print("newArrivalMean="+newArrivalMean+"\n")
+    interArrivalsN.unpersist()
     
     return interArrivalsN;
   }
@@ -203,6 +223,7 @@ object MgfAnalysis {
     val servicesN = services.withColumn("sizeN", col("size")/(mu*serviceMean)).persist(MEMORY_AND_DISK);
     val newServiceMean = servicesN.agg(avg("sizeN")).head().getDouble(0)
     print("newServiceMean="+newServiceMean+"\n")
+    servicesN.unpersist()
     
     return servicesN;
   }
@@ -283,6 +304,45 @@ object MgfAnalysis {
   }
 
   
+  /**
+   * Main routine
+   */
+  def main(args: Array[String]) {
+    var eps = 1.0e-6
+    
+    if (args.length < 2) {
+      println("usage: loadFile <task_file(s)> <job_trace_file(s)>")
+      System.exit(0)
+    }
+    val task_infile = args(0)
+    val job_infile = args(1)
+    
+    val spark = utils.createSparkSession("MgfAnalsis")
+    import spark.implicits._
+    
+    val task_event_ds = gtraceReader.readTaskEvents(spark, task_infile) //.persist(MEMORY_AND_DISK);
+    val taskds = EventDataTransformer.transformTaskData(spark, task_event_ds, true).persist(MEMORY_AND_DISK);
+    
+    val job_event_ds = gtraceReader.readJobEvents(spark, job_infile) //.persist(MEMORY_AND_DISK);
+    val jobds = EventDataTransformer.transformJobData(spark, job_event_ds, true).filter("fail==0").persist(MEMORY_AND_DISK);
+    
+    val topUsers = MgfAnalysis.computeTopUsers(jobds, 10000)
+    
+    val bound_results = ListBuffer[(Double,(Double,Double))]()
+    val mu_values = List(1.2, 1.4, 1.6, 2.0, 3.0, 4.0, 5.0, 6.0)
+
+    for ( uname <- topUsers.map(x=>x._1) ) {
+      for ( mu <- mu_values ) {
+        println("working on mu="+mu)
+        val srlist = MgfAnalysis.computeEnvelope(spark, jobds, taskds, topUsers(0)._1, 1.0, mu)
+        val sra = srlist.collect()
+        val mintau = sra.reduce(_++_).filter(! _.alpha.isInfinity ).map( sr => tauQuantiles(sr,eps,16) ).filter(_._2._1 > 0.0).reduce( (t1,t2) => if (t1._2._1 < t2._2._1) t1 else t2 )
+        bound_results += ((mu, (mintau._2._1, mintau._2._2)))
+        println(uname+"\t"+mu+"\t"+mintau._2._1+"\t"+mintau._2._2)
+      }
+      println("\n\n")
+    }    
+  }
   
   
   
