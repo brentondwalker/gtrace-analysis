@@ -61,9 +61,13 @@ object MgfAnalysis {
     // the 2D lags array at every possible lag.
     // The size of these arrays will be on the order of max_l * arrivals.length
     println("computing arrival lags arrays...")
-    val lags_array_arrival = processLagsArray(arrivals.select("interarrivalN").collect().map(r => r.getDouble(0)), max_l)
+    //val lags_array_arrival = processLagsArray(arrivals.select("interarrivalN").collect().map(r => r.getDouble(0)), max_l)
+    //val cum_array_arrival = computeCumulativeArray(arrivals.select("interarrivalN").collect().map(r => r.getDouble(0)))
+    val arrival_increments = arrivals.select("interarrivalN").collect().map(r => r.getDouble(0))
     println("computing service lags arrays...")
-    val lags_array_service = processLagsArray(services.select("sizeN").collect().map(r => r.getDouble(0)), max_l)
+    //val lags_array_service = processLagsArray(services.select("sizeN").collect().map(r => r.getDouble(0)), max_l)
+    //val cum_array_service = computeCumulativeArray(services.select("sizeN").collect().map(r => r.getDouble(0)))
+    val service_increments = services.select("sizeN").collect().map(r => r.getDouble(0))
 
     // don't need these datasets in memory anymore
     arrivals.unpersist()
@@ -73,7 +77,8 @@ object MgfAnalysis {
     // (sigmaa:Double, rhoa:Double, sigmas:Double, rhos:Double, theta:Double, alpha:Double)
     // The alpha is actually computed from the other parts, but is convenient to have there.
     println("computing sigma-rho envelopes...")
-    val srLists = thetardd.map( theta => fitSigmaRhoLines(lags_array_arrival, lags_array_service, theta)) //.reduce(_ ++ _)  // XXX this reduce may be causing problems
+    //val srLists = thetardd.map( theta => fitSigmaRhoLines(lags_array_arrival, lags_array_service, theta)) //.reduce(_ ++ _)  // XXX this reduce may be causing problems
+    val srLists = thetardd.map( theta => fitSigmaRhoLinesInter(arrival_increments, service_increments, theta, 2000)) //.reduce(_ ++ _)
     //var srLists = ListBuffer[SigmaRho]()
     //for ( theta <- theta_list ) {
       //println("\nworking on theta="+theta)
@@ -112,6 +117,98 @@ object MgfAnalysis {
             max_valid_l = l-1
             break
         }
+    }}
+    println("max_valid_l="+max_valid_l)
+    if (max_valid_l <= 0) {
+      println("WARNING: max_valid_l <= 0")
+      return srList
+    }
+    
+    // try fitting lines
+    // first estimate the max and min slopes, and then compute the envelopes for several slopes in between
+    var min_rhoa = 1.0e99;
+    var max_rhoa = 0.0;
+    var min_rhos = 1.0e99;
+    var max_rhos = 0.0;
+    
+    // to keep from computing the slope of noise, compute slope over a widow of 1/10 of the data
+    val lwin = Math.round(max_valid_l/10)
+    if (max_valid_l <= lwin) {
+      println("WARNING: max_valid_l <= lwin")
+      return srList
+    }
+    for ( l <- 0 until (max_valid_l-lwin)) {
+        var temp_rhoa = (logMgfa(l+lwin) - logMgfa(l)) / (lwin)
+        min_rhoa = Math.min(temp_rhoa, min_rhoa)
+        max_rhoa = Math.max(temp_rhoa, max_rhoa)
+        
+        var temp_rhos = (logMgfs(l+lwin) - logMgfs(l)) / (lwin)
+        min_rhos = Math.min(temp_rhos, min_rhos)
+        max_rhos = Math.max(temp_rhos, max_rhos)
+    }
+    println("min_rhoa="+min_rhoa+"\tmax_rhoa="+max_rhoa+"\tmin_rhos="+min_rhos+"\tmax_rhos="+max_rhos)
+    
+    // also require that the minimum rhoa is greater or equal to the minimum rhos
+    // i.e. there is no reason to consider infeasible solutions
+    min_rhoa = Math.max(min_rhoa, min_rhos)
+    
+    if ((min_rhoa > max_rhoa) || (min_rhos > max_rhos)) {
+      println("WARNING: no feasible solutions here")
+      return srList
+    }
+    
+    for ( is <- 0 until numlines ) {
+        var rhos = min_rhos + (max_rhos - min_rhos) * ((1.0*is)/numlines)
+        
+        var sigmas = -1.0e99
+        for ( l <- 0 until logMgfs.length ) { sigmas = Math.max( sigmas, (logMgfs(l) - l*rhos)) }
+        
+        for (ia <- 1 to numlines ) {
+            var rhoa = min_rhoa + (max_rhoa - min_rhoa) * ((1.0*ia)/numlines)
+            
+            var sigmaa = -1.0e99
+            for ( l <- 0 until logMgfa.length ) { sigmaa = Math.max( sigmaa, (l*rhos - logMgfs(l))) }
+            var alpha = Math.exp(theta*(sigmaa+sigmas)) / ( 1 - Math.exp(-theta*(rhoa-rhos)) );
+            srList += SigmaRho(sigmaa, rhoa, sigmas, min_rhos, theta, alpha)
+        }
+    }
+    
+    return srList;
+  }
+  
+  
+  /**
+   * given a theta and the lags array for an arrival and service process, compute a
+   * bunch of feasible sigma/rho envelopes.
+   * This is a new version of the function that works from the inter-arrival and service arrays.
+   */
+  def fitSigmaRhoLinesInter(arrivals:Array[Double], services:Array[Double], theta:Double, max_l:Integer): ListBuffer[SigmaRho] = {
+    //val max_l = Math.min(lags_array_arrival.length, lags_array_service.length)
+    //println("max_l="+max_l)
+
+    val numlines = 10
+    
+    val srList = ListBuffer[SigmaRho]()
+    
+    // first need to compute the MGFs for this theta
+    val logMgfa = Array.fill(max_l){0.0}
+    val logMgfs = Array.fill(max_l){0.0}
+    println("logMgfa.length="+logMgfa.length)
+
+    var max_valid_l = 0;
+    
+    val arrivals_mn = Array.fill[Double](arrivals.length - max_l)(0.0)
+    val services_mn = Array.fill[Double](services.length - max_l)(0.0)
+    breakable {
+    for ( l <- 0 until max_l ) {
+      for ( i <- 0 until arrivals_mn.length ) { arrivals_mn(i) += arrivals(i+l) }
+      for ( i <- 0 until services_mn.length ) { services_mn(i) += services(i+l) }
+      logMgfa(l) = Math.log( arrivals_mn.map( x => Math.exp(theta*x)).sum/arrivals_mn.length ) / theta;
+      logMgfs(l) = Math.log( services_mn.map( x => Math.exp(theta*x)).sum/services_mn.length ) / theta;
+      if (logMgfa(l).isInfinity || logMgfs(l).isInfinity) {
+          max_valid_l = l-1;
+          break
+      }
     }}
     println("max_valid_l="+max_valid_l)
     if (max_valid_l <= 0) {
@@ -302,7 +399,7 @@ object MgfAnalysis {
     
     return a;
   }
-
+  
   
   /**
    * Main routine
