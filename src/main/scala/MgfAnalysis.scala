@@ -335,11 +335,13 @@ object MgfAnalysis {
   def findIntersectionTheta(spark:SparkSession, interArrivalsN:Dataset[Row], servicesN:Dataset[Row], l:Long) : Double = {
     import spark.implicits._
     
+    println("findIntersectionTheta("+l+")")
+    
     var l_theta = 1e-10;
     var r_theta = 1.0 - 1e-5;
     var theta = l_theta;
     val intersection_threshold = 0.0001;
-    var ct = 0;
+    val theta_progress_threshold = 1e-10;
     val uta = interArrivalsN.withColumn("l1", sum($"interarrivalN").over(Window.orderBy("arrive").rowsBetween(0,l))).persist(MEMORY_AND_DISK);
     //uta.show()
     val uts = servicesN.withColumn("l1", sum($"sizeN").over(Window.orderBy("arrive").rowsBetween(0,l))).persist(MEMORY_AND_DISK);
@@ -349,14 +351,17 @@ object MgfAnalysis {
     var rhoa = Math.log( uta.withColumn("temp1", exp(col("l1").multiply(-theta))).agg(mean("temp1")).head().getDouble(0) ) / (-theta)
     var rhos = Math.log( uts.withColumn("temp1", exp(col("l1").multiply(theta))).agg(mean("temp1")).head().getDouble(0) ) / theta
     //println("rhoa="+rhoa+"\trhos="+rhos)
-    
-    while (Math.abs(rhoa-rhos) > intersection_threshold) {
+
+    var ct = 0;
+    var found_intersection = false
+    var last_theta = theta
+    while ((Math.abs(rhoa-rhos) > intersection_threshold) && (ct < 5000)) {
         rhoa = Math.log( uta.withColumn("temp1", exp(col("l1").multiply(-theta))).agg(mean("temp1")).head().getDouble(0) ) / (-theta)
         rhos = Math.log( uts.withColumn("temp1", exp(col("l1").multiply(theta))).agg(mean("temp1")).head().getDouble(0) ) / theta
         //println("rhoa="+rhoa+"\trhos="+rhos)
         
         val mma = uta.withColumn("temp1", exp(col("l1").multiply(-theta))).agg(mean("temp1")).head().getDouble(0)
-        val mms = uts.withColumn("temp1", exp(col("l1").multiply(theta))).agg(mean("temp1")).head().getDouble(0)
+        //val mms = uts.withColumn("temp1", exp(col("l1").multiply(theta))).agg(mean("temp1")).head().getDouble(0)
         //println("mma="+mma+"\tmms="+mms)
         
         if (mma == 0.0) {
@@ -364,13 +369,26 @@ object MgfAnalysis {
         } else {
             if (rhos > rhoa) {
                 r_theta = theta;
+                found_intersection = true
             } else {
                 l_theta = theta;
             }
         }
         theta = Math.exp((Math.log(r_theta) + Math.log(l_theta))/2);
-        ct = ct + 1;
+        ct += 1;
         //println(ct+"\t"+theta+"\t"+(rhoa-rhos))
+
+        // if we end up in iterations with theta not moving much, then we're not going to get the lines to cross.
+        if (Math.abs(theta-last_theta) < theta_progress_threshold) {
+          ct = 5000
+        }
+        last_theta = theta
+    }
+    if (ct > 4999) {
+      println("WARNING: findIntersectionTheta("+l+") bailed out without getting close enough to the intersection.");
+    }
+    if (! found_intersection) {
+      println("WARNING: findIntersectionTheta("+l+") bailed out without finding an intersection.");
     }
     
     uta.unpersist();
