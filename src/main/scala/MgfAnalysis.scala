@@ -253,13 +253,23 @@ object MgfAnalysis {
         var rhos = min_rhos + (max_rhos - min_rhos) * ((1.0*is)/numlines)
         
         var sigmas = -1.0e99
-        for ( l <- 0 until logMgfs.length ) { sigmas = Math.max( sigmas, (logMgfs(l) - l*rhos)) }
+        for ( l <- 0 until logMgfs.length ) { sigmas = Math.max( sigmas, (logMgfs(l) - l*rhos) ) }
+        // this is the adjustment for the service envelope being a function of (n-m+1)=(l+1)
+        // Specifically, if we compute a line
+        // M(l) = rhos*l + b
+        // but the actual envelope is
+        //        rhos*(l+1) + sigmas
+        //      = rhos*l + (rhos + sigmas)
+        // then we have b = rhos + sigmas
+        // to get the real sigmas we need to subtract rhos
+        // sigmas = b - rhos
+        sigmas -= rhos
         
         for (ia <- 1 to numlines ) {
             var rhoa = min_rhoa + (max_rhoa - min_rhoa) * ((1.0*ia)/numlines)
             
             var sigmaa = -1.0e99
-            for ( l <- 0 until logMgfa.length ) { sigmaa = Math.max( sigmaa, (l*rhos - logMgfs(l))) }
+            for ( l <- 0 until logMgfa.length ) { sigmaa = Math.max( sigmaa, (l*rhos - logMgfs(l)) ) }
             var alpha = Math.exp(theta*(sigmaa+sigmas)) / ( 1 - Math.exp(-theta*(rhoa-rhos)) );
             srList += SigmaRho(sigmaa, rhoa, sigmas, min_rhos, theta, alpha)
         }
