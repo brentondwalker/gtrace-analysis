@@ -10,7 +10,8 @@ import org.apache.spark.storage.StorageLevel._
 import org.apache.spark.sql.expressions.Window
 import scala.collection.mutable.ListBuffer
 import scala.util.control.Breaks._
-
+import breeze.linalg.{DenseMatrix, DenseVector}
+import breeze.stats.regression.leastSquares
 
 /**
  * This will contain code to compute and analyze moment generating
@@ -28,6 +29,75 @@ object MgfAnalysis {
     val userJobCounts = jobds.groupBy("username").count().sort(desc("count"));
     return userJobCounts.filter("count > "+threshold).collect().map( x => (x.getString(0), x.getLong(1)) )
   }
+  
+  
+  /**
+   * For a number of different thetas we analyze the MGF as a function of l=(n-m).
+   * Is it linear?
+   */
+  def logMgfLinearity(spark:SparkSession, ds:Dataset[Row], colname:String, uname:String): Array[(Double,Double)] = {
+    val max_l = 2000;
+    val num_thetas = 10;
+    
+    val r_values = Array.fill[Double](num_thetas*2 + 1){0.0}
+    
+    // pull the data out of the rdd and compute the cumulative array
+    val increments = ds.select(colname).collect().map(r => r.getDouble(0))
+    val incr_mean = increments.reduce(_+_) / increments.length
+    
+    // we need a list of the different thetas to test.  We will normalize the
+    // process to have mean 1.0.  Then We must have 0 < theta < 1.0.  The
+    // interesting behavior sometimes happens when theta comes very close to
+    // one of those limits.  We can choose our sequence of thetas on a log scale.
+    val thetas = ListBuffer[Double]()
+    thetas += 0.5
+    for ( i <- 2 to num_thetas ) {
+      thetas += Math.pow(0.5, i)
+      thetas += 1.0 - Math.pow(0.5, i)
+    }
+    val thetardd = spark.sparkContext.parallelize(thetas.sorted, thetas.length);
+    
+    return thetardd.map( theta => (theta, logMgfRegression(increments.map(x => x/incr_mean), theta, max_l)) ).collect()
+    
+  }
+  
+  /**
+   * given an array with the increments of a random process and a theta,
+   * try a linear regression on the log-MGF as a function of l=(n-m).
+   * If the samples are GI, then the log-MGF will be linear. 
+   */
+  def logMgfRegression(increments:Array[Double], theta:Double, max_l:Integer): Double = {
+    
+    val srList = ListBuffer[SigmaRho]()
+    
+    // first need to compute the MGFs for this theta
+    val logMgf = Array.fill(max_l){0.0}
+    
+    var max_valid_l = 0;
+    
+    val increments_mn = Array.fill[Double](increments.length - max_l)(0.0)
+    breakable {
+    for ( l <- 0 until max_l ) {
+      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
+      logMgf(l) = Math.log( increments_mn.map( x => Math.exp(theta*x)).sum/increments_mn.length ) / theta;
+      if (logMgf(l).isInfinity) {
+          max_valid_l = l-1;
+          break
+      }
+    }}
+    println("max_valid_l="+max_valid_l)
+    if (max_valid_l <= 0) {
+      println("WARNING: max_valid_l <= 0")
+      return 0.0
+    }
+    
+    // try the regression
+    
+    
+    
+    return 0.0
+  }
+  
   
   
   /**
