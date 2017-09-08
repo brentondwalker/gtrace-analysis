@@ -10,8 +10,9 @@ import org.apache.spark.storage.StorageLevel._
 import org.apache.spark.sql.expressions.Window
 import scala.collection.mutable.ListBuffer
 import scala.util.control.Breaks._
-import breeze.linalg.{DenseMatrix, DenseVector}
+import breeze.linalg.{sum => bsum, DenseMatrix, DenseVector}
 import breeze.stats.regression.leastSquares
+//import breeze.numerics.{mean => bmean}
 
 /**
  * This will contain code to compute and analyze moment generating
@@ -31,15 +32,119 @@ object MgfAnalysis {
   }
   
   
+    /**
+   * For a number of different thetas we analyze the MGF as a function of l=(n-m).
+   * Is it linear?
+   * In this one for each theta we take a sliding window over some fraction of
+   * of the log-MGF function, do a least-squares regression, and note the slope.
+   * Then we return the theta, with the biggest angle between the max and min slopes,
+   * along with the max and min slopes themselves.
+   */
+  def logMgfLinearSpan(spark:SparkSession, ds:Dataset[Row], colname:String): Array[(Double,(Double,Double))] = {
+    val max_l = 2000;
+    val theta_factor = 0.9
+    val num_thetas = 10;
+    val fit_fraction = 0.25
+    val num_fit_points = (fit_fraction * max_l).toInt
+        
+    // pull the data out of the rdd and compute the cumulative array
+    val increments = ds.select(colname).collect().map(r => r.getDouble(0))
+    val incr_mean = increments.reduce(_+_) / increments.length
+    
+    // we need a list of the different thetas to test.  We will normalize the
+    // process to have mean 1.0.  Then We must have 0 < theta < 1.0.  The
+    // interesting behavior sometimes happens when theta comes very close to
+    // one of those limits.  We can choose our sequence of thetas on a log scale.
+    val thetas = ListBuffer[Double]()
+    thetas += 0.5
+    for ( i <- 2 to num_thetas ) {
+      thetas += Math.pow(theta_factor, i)
+      thetas += 1.0 - Math.pow(0.5, i)
+    }
+    val thetardd = spark.sparkContext.parallelize(thetas.sorted, thetas.length);
+    
+    println("thetardd="+thetardd)
+    thetardd.foreach(println)
+    return thetardd.map( theta => (theta, logMgfLinearSpanRegression(increments.map(x => x/incr_mean), theta, max_l, num_fit_points)) ).collect()
+    
+  }
+  
+  /**
+   * given an array with the increments of a random process and a theta,
+   * try a linear regression on the log-MGF as a function of l=(n-m).
+   * This version does the regression repeatedly over a sliding window
+   * of a fixed length and looks for the max and min slope estimates.
+   */
+  def logMgfLinearSpanRegression(increments:Array[Double], theta:Double, max_l:Integer, num_fit_points:Integer): (Double,Double) = {
+        
+    // first need to compute the MGFs for this theta
+    val logMgf = Array.fill(max_l){0.0}
+    println("logMgf.length="+logMgf.length)
+    
+    var max_valid_l = 0;
+    
+    val increments_mn = Array.fill[Double](increments.length - max_l)(0.0)
+    breakable {
+    for ( l <- 0 until max_l ) {
+      //println("loop for l="+l)
+      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
+      logMgf(l) = Math.log( increments_mn.map( x => Math.exp(theta*x)).sum/increments_mn.length ) / theta;
+      if (logMgf(l).isInfinity) {
+          max_valid_l = l-1;
+          break
+      }
+    }}
+    println("max_valid_l="+max_valid_l)
+    
+    if (max_valid_l < (num_fit_points+10)) {
+      println("WARNING: max_valid_l < (num_fit_points+10)")
+      return (0.0, 0.0)
+    }
+    
+    // loop over the windows of the desired size
+    // Doing this at every shift of the window is gratuitous, but we're
+    // parallelizing it and the data is not very big, so whatever.
+    val indep = DenseMatrix.tabulate(num_fit_points,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+    var min_b:Double = 1.0e99
+    var max_b:Double = -1.0e99
+    
+    for (l_start <- 0 until (max_valid_l - num_fit_points)) {
+      // try the regression
+      val dep = DenseVector(logMgf.slice(l_start, (l_start+num_fit_points)));
+      println("indep = "+indep.rows+" x "+indep.cols)
+      println("dep = "+dep.length)
+      val result = leastSquares(indep, dep)
+      
+      //println("result="+result)
+      //println("result.coefficients="+result.coefficients)
+      //println("intercept=" + result.coefficients.data(0))
+      //println("slope=" + result.coefficients.data(1))
+      //println("r^2=" + result.rSquared)
+      
+      val b = result.coefficients.data(1)
+      min_b = Math.min(min_b, b)
+      max_b = Math.max(max_b, b)
+      
+    }
+    
+    return (min_b, max_b)
+  }
+  
+  
+  
+  
   /**
    * For a number of different thetas we analyze the MGF as a function of l=(n-m).
    * Is it linear?
+   * In this one we fit the entire log-MGF using least-squares regression and look for
+   * small r^2 values.
    */
-  def logMgfLinearity(spark:SparkSession, ds:Dataset[Row], colname:String, uname:String): Array[(Double,Double)] = {
+  def logMgfLinearity(spark:SparkSession, ds:Dataset[Row], colname:String): Array[(Double,Double)] = {
     val max_l = 2000;
-    val num_thetas = 10;
+    val theta_factor = 0.9
+    val num_thetas = 50;
     
-    val r_values = Array.fill[Double](num_thetas*2 + 1){0.0}
+    //val r_values = Array.fill[Double](num_thetas*2 + 1){0.0}
     
     // pull the data out of the rdd and compute the cumulative array
     val increments = ds.select(colname).collect().map(r => r.getDouble(0))
@@ -52,11 +157,13 @@ object MgfAnalysis {
     val thetas = ListBuffer[Double]()
     thetas += 0.5
     for ( i <- 2 to num_thetas ) {
-      thetas += Math.pow(0.5, i)
+      thetas += Math.pow(theta_factor, i)
       thetas += 1.0 - Math.pow(0.5, i)
     }
     val thetardd = spark.sparkContext.parallelize(thetas.sorted, thetas.length);
     
+    println("thetardd="+thetardd)
+    thetardd.foreach(println)
     return thetardd.map( theta => (theta, logMgfRegression(increments.map(x => x/incr_mean), theta, max_l)) ).collect()
     
   }
@@ -67,17 +174,17 @@ object MgfAnalysis {
    * If the samples are GI, then the log-MGF will be linear. 
    */
   def logMgfRegression(increments:Array[Double], theta:Double, max_l:Integer): Double = {
-    
-    val srList = ListBuffer[SigmaRho]()
-    
+        
     // first need to compute the MGFs for this theta
     val logMgf = Array.fill(max_l){0.0}
+    println("logMgf.length="+logMgf.length)
     
     var max_valid_l = 0;
     
     val increments_mn = Array.fill[Double](increments.length - max_l)(0.0)
     breakable {
     for ( l <- 0 until max_l ) {
+      //println("loop for l="+l)
       for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
       logMgf(l) = Math.log( increments_mn.map( x => Math.exp(theta*x)).sum/increments_mn.length ) / theta;
       if (logMgf(l).isInfinity) {
@@ -86,16 +193,35 @@ object MgfAnalysis {
       }
     }}
     println("max_valid_l="+max_valid_l)
-    if (max_valid_l <= 0) {
-      println("WARNING: max_valid_l <= 0")
+    if (max_valid_l <= 10) {
+      println("WARNING: max_valid_l <= 10")
       return 0.0
     }
     
     // try the regression
+    val indep = DenseMatrix.tabulate(max_valid_l,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+    val dep = DenseVector(logMgf.slice(0, max_valid_l))
+    println("indep = "+indep.rows+" x "+indep.cols)
+    println("dep = "+dep.length)
+    val result = leastSquares(indep, dep)
     
+    //println("result="+result)
+    //println("result.coefficients="+result.coefficients)
+    //println("intercept=" + result.coefficients.data(0))
+    //println("slope=" + result.coefficients.data(1))
+    //println("r^2=" + result.rSquared)
     
+    val ymean = breeze.stats.mean(dep)
+    val sstot = bsum( dep.map( y => breeze.numerics.pow(y-ymean,2) ) )
+    val residuals = dep.map( x => -x ) + indep(::,0).map( x => x*result.coefficients.data(0) ) + indep(::,1).map( x => x*result.coefficients.data(1) )
+    val ssres = bsum( residuals.map( e => breeze.numerics.pow(e,2)) )
     
-    return 0.0
+    //println("ymean="+ymean)
+    //println("sstot="+sstot)
+    //println("ssres="+ssres)
+    //println("r^2=" + (1.0 - ssres/sstot))
+    
+    return (1.0 - ssres/sstot)
   }
   
   
@@ -496,6 +622,22 @@ object MgfAnalysis {
     }
     
     return a;
+  }
+  
+  
+  /**
+   * This actually **CAN'T** be used in this project because there are dependency conflicts
+   * between spark and breeze and sparkts.
+   * 
+   * When I import the sparkts jar file directly into the zeppelin notebook, however, everything works.
+   */
+  def computeArrivalAutocorr(spark:SparkSession, jobds:Dataset[Row], taskds:Dataset[Row], uname:String, lambda:Double, mu:Double) = {
+    //print(uname.getString(0)+"\n")
+    val arrivals = taskds.filter("username='"+uname+"'").select("arrive").sort("arrive").collect().map(x => x.getLong(0).toDouble)
+    val interArrivals = (arrivals drop 1, arrivals).zipped.map(_-_)
+    print(arrivals.length+"\t"+interArrivals.length+"\t"+interArrivals(10)+"\n")
+    //var ac = UnivariateTimeSeries.autocorr(interArrivals, 100)
+    //var ac = com.cloudera.sparkts.UnivariateTimeSeries.autocorr(interArrivals, 100)
   }
   
   
