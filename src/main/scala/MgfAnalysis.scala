@@ -32,7 +32,67 @@ object MgfAnalysis {
   }
   
   
-    /**
+  def computeArrivalMgf(spark:SparkSession, ds:Dataset[Row], uname:String, max_l:Integer, theta_arg:Double): Array[Array[Double]] = {
+    var theta = theta_arg
+    if (theta > 0.0) {
+      println("WARNING: computeArrivalMgf(): you should pass in a negative theta...fixing it for you")
+      theta = -theta_arg
+    }
+    
+    val mgf = Array.ofDim[Double](max_l,3)
+    
+    val increments = getNormalizedArrivals(spark, ds, uname, 1.0)
+      .select("interarrivalN")
+      .collect()
+      .map(r => r.getDouble(0))
+    
+    var max_valid_l = 0;
+    
+    val increments_mn = Array.fill[Double](increments.length - max_l)(0.0)
+    breakable {
+    for ( l <- 0 until max_l ) {
+      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
+      mgf(l)(0) = l
+      mgf(l)(1) = increments_mn.map( x => Math.exp(theta*x)).sum/increments_mn.length
+      mgf(l)(2) = Math.log(mgf(l)(1))/theta;
+      if (mgf(l)(2).isInfinity) {
+          max_valid_l = l-1;
+          break
+      }
+    }}
+    
+    return mgf.slice(0,max_valid_l)
+  }
+  
+
+  def computeServiceMgf(spark:SparkSession, ds:Dataset[Row], uname:String, max_l:Integer, theta:Double): Array[Array[Double]] = {
+    val mgf = Array.ofDim[Double](max_l,3)
+    
+    val increments = getNormalizedServices(spark, ds, uname, 1.0)
+      .select("sizeN")
+      .collect()
+      .map(r => r.getDouble(0))
+    
+    var max_valid_l = 0;
+    
+    val increments_mn = Array.fill[Double](increments.length - max_l)(0.0)
+    breakable {
+    for ( l <- 0 until max_l ) {
+      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
+      mgf(l)(0) = l
+      mgf(l)(1) = increments_mn.map( x => Math.exp(theta*x)).sum/increments_mn.length
+      mgf(l)(2) = Math.log(mgf(l)(1))/theta;
+      if (mgf(l)(2).isInfinity) {
+          max_valid_l = l-1;
+          break
+      }
+    }}
+    
+    return mgf.slice(0,max_valid_l)
+  }
+    
+  
+  /**
    * For a number of different thetas we analyze the MGF as a function of l=(n-m).
    * Is it linear?
    * In this one for each theta we take a sliding window over some fraction of
@@ -40,12 +100,19 @@ object MgfAnalysis {
    * Then we return the theta, with the biggest angle between the max and min slopes,
    * along with the max and min slopes themselves.
    */
-  def logMgfLinearSpan(spark:SparkSession, ds:Dataset[Row], colname:String): Array[(Double,(Double,Double))] = {
+  def logMgfLinearSpan(spark:SparkSession, ds:Dataset[Row], is_arrivals:Boolean): Array[(Double,(Double,Double,Double))] = {
     val max_l = 2000;
     val theta_factor = 0.9
+    var theta_sign = 1.0
     val num_thetas = 10;
     val fit_fraction = 0.25
     val num_fit_points = (fit_fraction * max_l).toInt
+    
+    var colname = "sizeN"
+    if (is_arrivals) {
+      colname = "interarrivalN"
+      theta_sign = -1.0
+    }
         
     // pull the data out of the rdd and compute the cumulative array
     val increments = ds.select(colname).collect().map(r => r.getDouble(0))
@@ -65,7 +132,7 @@ object MgfAnalysis {
     
     println("thetardd="+thetardd)
     thetardd.foreach(println)
-    return thetardd.map( theta => (theta, logMgfLinearSpanRegression(increments.map(x => x/incr_mean), theta, max_l, num_fit_points)) ).collect()
+    return thetardd.map( theta => (theta_sign*theta, logMgfLinearSpanRegression(increments.map(x => x/incr_mean), theta_sign*theta, max_l, num_fit_points)) ).collect()
     
   }
   
@@ -74,8 +141,9 @@ object MgfAnalysis {
    * try a linear regression on the log-MGF as a function of l=(n-m).
    * This version does the regression repeatedly over a sliding window
    * of a fixed length and looks for the max and min slope estimates.
+   * The third thing in the tuple is the angle between the slopes.
    */
-  def logMgfLinearSpanRegression(increments:Array[Double], theta:Double, max_l:Integer, num_fit_points:Integer): (Double,Double) = {
+  def logMgfLinearSpanRegression(increments:Array[Double], theta:Double, max_l:Integer, num_fit_points:Integer): (Double,Double,Double) = {
         
     // first need to compute the MGFs for this theta
     val logMgf = Array.fill(max_l){0.0}
@@ -98,7 +166,7 @@ object MgfAnalysis {
     
     if (max_valid_l < (num_fit_points+10)) {
       println("WARNING: max_valid_l < (num_fit_points+10)")
-      return (0.0, 0.0)
+      return (0.0, 0.0, 0.0)
     }
     
     // loop over the windows of the desired size
@@ -127,7 +195,10 @@ object MgfAnalysis {
       
     }
     
-    return (min_b, max_b)
+    // compute the angle between the max and min slopes
+    val angle  = Math.atan(max_b) - Math.atan(min_b)
+    
+    return (min_b, max_b, angle)
   }
   
   
@@ -139,14 +210,19 @@ object MgfAnalysis {
    * In this one we fit the entire log-MGF using least-squares regression and look for
    * small r^2 values.
    */
-  def logMgfLinearity(spark:SparkSession, ds:Dataset[Row], colname:String): Array[(Double,Double)] = {
+  def logMgfLinearity(spark:SparkSession, ds:Dataset[Row], is_arrivals:Boolean): Array[(Double,Double)] = {
     val max_l = 2000;
     val theta_factor = 0.9
     val num_thetas = 50;
     
-    //val r_values = Array.fill[Double](num_thetas*2 + 1){0.0}
-    
-    // pull the data out of the rdd and compute the cumulative array
+    var theta_sign = 1.0
+    var colname = "sizeN"
+    if (is_arrivals) {
+      colname = "interarrivalN"
+      theta_sign = -1.0
+    }
+
+        // pull the data out of the rdd and compute the cumulative array
     val increments = ds.select(colname).collect().map(r => r.getDouble(0))
     val incr_mean = increments.reduce(_+_) / increments.length
     
@@ -164,8 +240,7 @@ object MgfAnalysis {
     
     println("thetardd="+thetardd)
     thetardd.foreach(println)
-    return thetardd.map( theta => (theta, logMgfRegression(increments.map(x => x/incr_mean), theta, max_l)) ).collect()
-    
+    return thetardd.map( theta => (theta_sign*theta, logMgfRegression(increments.map(x => x/incr_mean), theta_sign*theta, max_l)) ).collect()
   }
   
   /**
