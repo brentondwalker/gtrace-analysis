@@ -130,7 +130,7 @@ object MgfAnalysis {
     if (data.is_arrival) {
       theta_sign = -1.0
     }
-
+    
     val incr_mean = data.increments.reduce(_+_) / data.increments.length
     
     // we need a list of the different thetas to test.  We will normalize the
@@ -331,7 +331,7 @@ object MgfAnalysis {
    * the left of this crossing point.
    */
   def findIntersectionTheta(arrivals:IntertimeProcessData, services:IntertimeProcessData, l:Long) : Double = {    
-    println("findIntersectionTheta("+l+")")
+    //println("findIntersectionTheta("+l+")")
     
     var l_theta = 1e-10;
     var r_theta = 1.0 - 1e-5;
@@ -362,25 +362,28 @@ object MgfAnalysis {
       val mma = arrivals_l.map( x => Math.exp(-theta*x)).sum/arrivals_l.length
       val mms = services_l.map( x => Math.exp(theta*x)).sum/services_l.length
       
-      
       if (mma == 0.0) {
+        println("  mma=0")
         r_theta = theta;
       } else if (mms.isInfinite()) {
+        println("  mms=infty")
         r_theta = theta;
       } else {
         rhoa = Math.log( mma ) / (-theta);
         rhos = Math.log( mms ) / theta
         
         if (rhos > rhoa) {
+          println("  rhos > rhoa")
           r_theta = theta;
           found_intersection = true
         } else {
-            l_theta = theta;
+          println("  rhos <= rhoa")
+          l_theta = theta;
         }
       }
+      println(ct+"\t"+theta+"\t"+rhoa+"\t"+rhos+"\t"+(rhoa-rhos)+"\t\t"+l_theta+"\t"+r_theta+"\t"+(r_theta-l_theta))
       theta = Math.exp((Math.log(r_theta) + Math.log(l_theta))/2);
       ct += 1;
-      println(ct+"\t"+theta+"\t"+(rhoa-rhos))
 
       // if we end up in iterations with theta not moving much, then we're not going to get the lines to cross.
       if (Math.abs(theta-last_theta) < theta_progress_threshold) {
@@ -397,7 +400,117 @@ object MgfAnalysis {
     
     return theta;
   }
+  
+  
+  /**
+   * For any particular lag l=n-m, we can look at the MGF of A(m,n) and S(m,n) as functions 
+   * of theta.
+   * 
+   * If the system is stable (and we have enough data) then there will be some theta \in (0,1)
+   * where rho_S and rho)A cross.  We want to pick a theta that is slightly to the left of
+   * this crossing point.
+   * 
+   * The old version just looked for a crossing point in the log-MGFs.  That is more restrictive
+   * than necessary.  The slope of the MGF as a function of l=(n-m) is rho_S and rho_A,
+   * respectively.  We only really need to require that rho_S < rho_A, which means the
+   * envelopes will cross.
+   * 
+   * In order to do this, instead of looking at the MGFs for a particular value of l, we need to
+   * compute the MGF for a range of l values and then estimate the slope.
+   */
+  def findIntersectionThetaBySlope(arrivals:IntertimeProcessData, services:IntertimeProcessData, l:Long, l_window:Int) : Double = {    
+    //println("findIntersectionThetaBySlope("+l+")")
+    
+    var l_theta = 1e-10;
+    var r_theta = 1.0 - 1e-5;
+    var theta = l_theta;
+    val intersection_threshold = 0.0001;
+    val theta_progress_threshold = 1e-10;
+    
+    // this could be done faster by decomposing logarithmically
+    val arrivals_l:Array[Double] = Array.fill[Double](arrivals.increments.length - l.toInt){0.0}
+    val services_l:Array[Double] = Array.fill[Double](services.increments.length - l.toInt){0.0}
+    for ( i <- 0 until l.toInt ) {
+      for (j <- 0 until arrivals_l.length ) {
+        arrivals_l(j) += arrivals.increments(j+i)
+      }
+      for (j <- 0 until services_l.length ) {
+        services_l(j) += services.increments(j+i)
+      }
+    }
+    
+    var mgfa = arrivals.computeMgf(l.toInt, l.toInt+l_window, -theta).map(_(2))
+    var mgfs = services.computeMgf(l.toInt, l.toInt+l_window, theta).map(_(2))
+    
+    // now use regression (??) to estimate the slope over the window
+    var indepa = DenseMatrix.tabulate(mgfa.length,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+    var depa = DenseVector(mgfa);
+    var rhoa = leastSquares(indepa, depa).coefficients.data(1)
 
+    var indeps = DenseMatrix.tabulate(mgfs.length,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+    var deps = DenseVector(mgfs);
+    var rhos = leastSquares(indeps, deps).coefficients.data(1)
+
+    //var rhoa = Math.log( arrivals_l.map( x => Math.exp(-theta*x)).sum/arrivals_l.length ) / (-theta)
+    //var rhos = Math.log( services_l.map( x => Math.exp(theta*x)).sum/services_l.length ) / theta
+    //println("rhoa="+rhoa+"\trhos="+rhos)
+    
+    var ct = 0;
+    var found_intersection = false
+    var last_theta = theta
+    while ((Math.abs(rhoa-rhos) > intersection_threshold) && (ct < 5000)) {
+      mgfa = arrivals.computeMgf(l.toInt, l.toInt+l_window, -theta).map(_(2));
+      mgfs = services.computeMgf(l.toInt, l.toInt+l_window, theta).map(_(2));
+      
+      val mma = arrivals_l.map( x => Math.exp(-theta*x)).sum/arrivals_l.length
+      val mms = services_l.map( x => Math.exp(theta*x)).sum/services_l.length
+      
+      if (mgfa.length < 10) {
+        println("  mgfa.length < 10")
+        r_theta = theta;
+      } else if (mgfs.length < 10) {
+        println("  mgfs.length < 10")
+        r_theta = theta;
+      } else {
+
+        indepa = DenseMatrix.tabulate(mgfa.length,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+        depa = DenseVector(mgfa);
+        rhoa = leastSquares(indepa, depa).coefficients.data(1);
+
+        indeps = DenseMatrix.tabulate(mgfs.length,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+        deps = DenseVector(mgfs);
+        rhos = leastSquares(indeps, deps).coefficients.data(1)
+        
+        if (rhos > rhoa) {
+          println("  rhos > rhoa")
+          r_theta = theta;
+          found_intersection = true
+        } else {
+          println("  rhos <= rhoa")
+          l_theta = theta;
+        }
+      }
+      println(ct+"\t"+theta+"\t"+rhoa+"\t"+rhos+"\t"+(rhoa-rhos)+"\t\t"+l_theta+"\t"+r_theta+"\t"+(r_theta-l_theta))
+      theta = Math.exp((Math.log(r_theta) + Math.log(l_theta))/2);
+      ct += 1;
+      
+      // if we end up in iterations with theta not moving much, then we're not going to get the lines to cross.
+      if (Math.abs(theta-last_theta) < theta_progress_threshold) {
+          ct = 5000
+      }
+      last_theta = theta
+    }
+    if (ct > 4999) {
+      println("WARNING: findIntersectionTheta("+l+") bailed out without getting close enough to the intersection.");
+    }
+    if (! found_intersection) {
+      println("WARNING: findIntersectionTheta("+l+") bailed out without finding an intersection.");
+    }
+    
+    return theta;
+  }
+
+  
   
   /**
    * Take a 1D array of Double, and produce a 2D array with the original array
@@ -465,7 +578,7 @@ object MgfAnalysis {
 
     for ( uname <- topUsers.map(x=>x._1) ) {
       val arrivals = new IntertimeProcessData().loadArrivalData(spark, jobds, uname, 1.0)
-      val services = new IntertimeProcessData().loadServiceData(spark, taskds, uname, 1.0)
+      val services = new IntertimeProcessData().loadFirstTaskServiceData(spark, taskds, uname, 1.0)
       for ( mu <- mu_values ) {
         println("working on mu="+mu)
         services.renormalize(mu)
@@ -482,3 +595,132 @@ object MgfAnalysis {
   
   
 }
+
+
+/**
+ * In the process of debugging I needed to compare to the old versions of some of these routines,
+ * and in the process fixed some issues.  Even though this code is obsolete, I'm trying to
+ * preserve the fixed versions.
+ * 
+ * The main thing this fixes is taking only the valid rows of A(m,n) and S(m,n).  Before it would
+ * include the rows that were sums of less than l things.
+ */
+object OldMgfAnalysis {
+
+
+  def findIntersectionThetaOld(spark:SparkSession, interArrivalsN:Dataset[Row], servicesN:Dataset[Row], l:Long) : Double = {
+    import spark.implicits._
+    
+    println("findIntersectionTheta("+l+")")
+    
+    var l_theta = 1e-10;
+    var r_theta = 1.0 - 1e-5;
+    var theta = l_theta;
+    val intersection_threshold = 0.0001;
+    val theta_progress_threshold = 1e-10;
+    val uta = interArrivalsN.withColumn("l1", sum($"interarrivalN").over(Window.orderBy("arrive").rowsBetween(0,l-1))).limit(interArrivalsN.count.toInt-l.toInt).persist(MEMORY_AND_DISK);
+    uta.show()
+    val uts = servicesN.withColumn("l1", sum($"sizeN").over(Window.orderBy("arrive").rowsBetween(0,l-1))).limit(servicesN.count.toInt-l.toInt).persist(MEMORY_AND_DISK);
+    uts.show()
+    // TODO: should remove the first l rows
+    
+    var rhoa = Math.log( uta.withColumn("temp1", exp(col("l1").multiply(-theta))).agg(mean("temp1")).head().getDouble(0) ) / (-theta)
+    var rhos = Math.log( uts.withColumn("temp1", exp(col("l1").multiply(theta))).agg(mean("temp1")).head().getDouble(0) ) / theta
+    //println("rhoa="+rhoa+"\trhos="+rhos)
+
+    var ct = 0;
+    var found_intersection = false
+    var last_theta = theta
+    while ((Math.abs(rhoa-rhos) > intersection_threshold) && (ct < 5000)) {
+        
+        val mma = uta.withColumn("temp1", exp(col("l1").multiply(-theta))).agg(mean("temp1")).head().getDouble(0)
+        val mms = uts.withColumn("temp1", exp(col("l1").multiply(theta))).agg(mean("temp1")).head().getDouble(0)
+        //println("mma="+mma+"\tmms="+mms)
+        
+        if (mma == 0.0) {
+            r_theta = theta;
+        } else if (mms.isInfinite()) {
+            r_theta = theta;
+        } else {
+            rhoa = Math.log( uta.withColumn("temp1", exp(col("l1").multiply(-theta))).agg(mean("temp1")).head().getDouble(0) ) / (-theta)
+            rhos = Math.log( uts.withColumn("temp1", exp(col("l1").multiply(theta))).agg(mean("temp1")).head().getDouble(0) ) / theta
+            //println("rhoa="+rhoa+"\trhos="+rhos)
+            
+            if (rhos > rhoa) {
+                r_theta = theta;
+                found_intersection = true
+            } else {
+                l_theta = theta;
+            }
+        }
+        println(ct+"\t"+theta+"\t"+rhoa+"\t"+rhos+"\t"+(rhoa-rhos)+"\t\t"+l_theta+"\t"+r_theta+"\t"+(r_theta-l_theta))
+        theta = Math.exp((Math.log(r_theta) + Math.log(l_theta))/2);
+        ct += 1;
+
+        // if we end up in iterations with theta not moving much, then we're not going to get the lines to cross.
+        if (Math.abs(theta-last_theta) < theta_progress_threshold) {
+          ct = 5000
+          println("BAILING OUT for no progress")
+        }
+        last_theta = theta
+    }
+    if (ct > 4999) {
+      println("WARNING: findIntersectionTheta("+l+") bailed out without getting close enough to the intersection.");
+    }
+    if (! found_intersection) {
+      println("WARNING: findIntersectionTheta("+l+") bailed out without finding an intersection.");
+    }
+    
+    uta.unpersist();
+    uts.unpersist();
+    
+    return theta;
+  }
+  
+  
+  /**
+   * take the absolute arrival times, convert it to an inter-arrival process, and
+   * then normalize the inter-arrival process to have a desired rate.
+   */
+  def getNormalizedArrivals(spark:SparkSession, jobds:Dataset[Row], uname:String, lambda:Double): Dataset[Row] = {
+    import spark.implicits._
+    
+    val arrivals = jobds.filter("username='"+uname+"'").select("arrive")
+    val w = org.apache.spark.sql.expressions.Window.orderBy("arrive")
+
+    // we want to take off the first inter-arrival time because it's relative to zero
+    val firstArrival = arrivals.agg(min("arrive")).head().getLong(0)
+    val interArrivals = arrivals.withColumn("interarrival",  col("arrive")-lag(col("arrive"), 1, 0).over(w)).filter($"arrive" > firstArrival).sort("arrive")
+    
+    // normalize the interArrivals
+    val arrivalMean = interArrivals.agg(mean("interarrival")).head().getDouble(0)
+    print("arrivalMean="+arrivalMean+"\n")
+    val interArrivalsN = interArrivals.withColumn("interarrivalN", col("interarrival")/(lambda*arrivalMean)).sort("arrive").persist(MEMORY_AND_DISK);
+    val newArrivalMean = interArrivalsN.agg(avg("interarrivalN")).head().getDouble(0)
+    print("newArrivalMean="+newArrivalMean+"\n")
+    interArrivalsN.unpersist()
+    
+    return interArrivalsN;
+  }
+  
+  
+  /**
+   * take a service time process and normalize it to have a specific rate.
+   */
+  def getNormalizedServices(spark:SparkSession, taskds:Dataset[Row], uname:String, mu:Double): Dataset[Row] = {
+    val services = taskds.filter("username='"+uname+"'").filter("fail = 0").filter("taskix = 0").select("arrive", "size")
+    
+    val serviceMean = services.agg(mean("size")).head().getDouble(0)
+    print("serviceMean="+serviceMean+"\n")
+    val servicesN = services.withColumn("sizeN", col("size")/(mu*serviceMean)).sort("arrive").persist(MEMORY_AND_DISK);
+    val newServiceMean = servicesN.agg(avg("sizeN")).head().getDouble(0)
+    print("newServiceMean="+newServiceMean+"\n")
+    servicesN.unpersist()
+    
+    return servicesN;
+  }
+  
+  
+}
+
+

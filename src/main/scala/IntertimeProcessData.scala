@@ -31,9 +31,9 @@ class IntertimeProcessData extends Serializable {
 
     // we want to take off the first inter-arrival time because it's relative to zero
     val firstArrival = arrivals.agg(min("arrive")).head().getLong(0)
-    val interArrivals = arrivals.withColumn("interarrival",  col("arrive")-lag(col("arrive"), 1, 0).over(w)).filter($"arrive" > firstArrival).sort("arrive")
+    val interArrivals = arrivals.withColumn("interarrival",  col("arrive")-lag(col("arrive"), 1, 0).over(w)).filter($"arrive" > firstArrival).sort("arrive").select("interarrival")
     
-    raw_increments = interArrivals.select("interarrival").collect().map( r => r.getLong(0) )
+    raw_increments = interArrivals.collect().map( r => r.getLong(0) )
     val increment_mean:Double = bsum(raw_increments)/raw_increments.length
     
     increments = raw_increments.map( x => x.toDouble/(lambda*increment_mean) )
@@ -47,12 +47,12 @@ class IntertimeProcessData extends Serializable {
   /**
    * take a service time process and normalize it to have a specific rate.
    */
-  def loadServiceData(spark:SparkSession, taskds:Dataset[Row], uname:String, mu:Double = 1.0): IntertimeProcessData = {
+  def loadFirstTaskServiceData(spark:SparkSession, taskds:Dataset[Row], uname:String, mu:Double = 1.0): IntertimeProcessData = {
     is_arrival = false
 
     val services = taskds.filter("username='"+uname+"'").filter("fail = 0").filter("taskix = 0").sort("arrive").select("size")
     
-    raw_increments = services.collect().map( r => r.getLong(0) )
+    raw_increments = services.select("size").collect().map( r => r.getLong(0) )
     val increment_mean:Double = bsum(raw_increments)/raw_increments.length
     increments = raw_increments.map( x => x.toDouble/(mu*increment_mean) )
     
@@ -79,6 +79,11 @@ class IntertimeProcessData extends Serializable {
    * function to compute MGF as a function of l-(n-m) for a single value of theta
    */
   def computeMgf(max_l:Integer, theta_arg:Double): Array[Array[Double]] = {
+    return computeMgf(1, max_l, theta_arg)
+  }
+
+  
+  def computeMgf(min_l:Int, max_l:Int, theta_arg:Double): Array[Array[Double]] = {
     var theta = theta_arg
 
     if (theta > 0.0 && is_arrival) {
@@ -91,24 +96,27 @@ class IntertimeProcessData extends Serializable {
       theta = -theta_arg
     }
     
-    val mgf = Array.ofDim[Double](max_l,3)
+    val mgf = Array.ofDim[Double]((max_l-min_l+1),3)
     var max_valid_l = 0;
     
     val increments_mn = Array.fill[Double](increments.length - max_l)(0.0)
     breakable {
-    for ( l <- 0 until max_l ) {
+    for ( l <- 0 until min_l ) {
       for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
-      mgf(l)(0) = l
-      mgf(l)(1) = increments_mn.map( x => Math.exp(theta*x)).sum/increments_mn.length
-      mgf(l)(2) = Math.log(mgf(l)(1))/theta;
-      if (mgf(l)(2).isInfinity) {
+    }
+    for ( l <- min_l until max_l ) {
+      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
+      mgf(l-min_l)(0) = l
+      mgf(l-min_l)(1) = increments_mn.map( x => Math.exp(theta*x)).sum/increments_mn.length
+      mgf(l-min_l)(2) = Math.log(mgf(l-min_l)(1))/theta;
+      if (mgf(l-min_l)(2).isInfinity) {
           max_valid_l = l-1;
           break
       }
       max_valid_l = l
     }}
     
-    return mgf.slice(0,max_valid_l)
+    return mgf.slice(0,max_valid_l-min_l)
   }
   
   
