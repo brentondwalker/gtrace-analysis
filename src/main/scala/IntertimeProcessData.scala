@@ -7,6 +7,7 @@ import scala.util.control.Breaks._
 import org.apache.spark.sql.expressions.Window
 import breeze.linalg.{sum => bsum, DenseMatrix, DenseVector}
 import breeze.stats.regression.leastSquares
+import scala.math.random
 
 
 class IntertimeProcessData extends Serializable {
@@ -63,6 +64,20 @@ class IntertimeProcessData extends Serializable {
   
   
   /**
+   * It is useful to test the algorithms with iid exponential data.
+   */
+  def generateExponentialData(rate:Double, num:Integer, is_arrival:Boolean): IntertimeProcessData = {
+    this.is_arrival = is_arrival
+    
+    increments = Array.fill[Double](num){0.0}.map( x => -Math.log(random)/rate )
+    raw_increments = increments.map( x => (x*1.0e12).toLong )
+    
+    return this
+  }
+  
+  
+  
+  /**
    * After we load the data, we may want to adjust the mean rate again.
    * 
    * I'm not sure this is good scala style, to adjust the values in-place
@@ -83,6 +98,14 @@ class IntertimeProcessData extends Serializable {
   }
 
   
+  /**
+   * Method to compute MGF
+   * 
+   * The MGF computation is different for arrivals and services.  The first
+   * thing is the sign of theta used.  The second thing is that A(m,n) is
+   * a sum of (n-m) increments, but S(m,n) is a sum of (n-m+1) increments.
+   * That is why I do this "service_extra_term" nonsense.
+   */
   def computeMgf(min_l:Int, max_l:Int, theta_arg:Double): Array[Array[Double]] = {
     var theta = theta_arg
 
@@ -99,13 +122,18 @@ class IntertimeProcessData extends Serializable {
     val mgf = Array.ofDim[Double]((max_l-min_l+1),3)
     var max_valid_l = 0;
     
-    val increments_mn = Array.fill[Double](increments.length - max_l)(0.0)
-    breakable {
-    for ( l <- 0 until min_l ) {
-      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
+    val increments_mn = if (is_arrival) Array.fill[Double](increments.length - max_l)(0.0) else Array.fill[Double](increments.length - max_l - 1)(0.0)
+    var service_extra_term = 0
+    if (!is_arrival) {
+      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(0) }
+      service_extra_term = 1
     }
+    for ( l <- 0 until min_l ) {
+      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l+service_extra_term) }
+    }
+    breakable {
     for ( l <- min_l until max_l ) {
-      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l) }
+      for ( i <- 0 until increments_mn.length ) { increments_mn(i) += increments(i+l+service_extra_term) }
       mgf(l-min_l)(0) = l
       mgf(l-min_l)(1) = increments_mn.map( x => Math.exp(theta*x)).sum/increments_mn.length
       mgf(l-min_l)(2) = Math.log(mgf(l-min_l)(1))/theta;

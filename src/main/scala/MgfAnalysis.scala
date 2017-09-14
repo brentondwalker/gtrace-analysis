@@ -334,27 +334,29 @@ object MgfAnalysis {
     //println("findIntersectionTheta("+l+")")
     
     var l_theta = 1e-10;
-    var r_theta = 1.0 - 1e-5;
+    var r_theta = 10.0 - 1e-5;
     var theta = l_theta;
     val intersection_threshold = 0.0001;
     val theta_progress_threshold = 1e-10;
     
     // this could be done faster by decomposing logarithmically
     val arrivals_l:Array[Double] = Array.fill[Double](arrivals.increments.length - l.toInt){0.0}
-    val services_l:Array[Double] = Array.fill[Double](services.increments.length - l.toInt){0.0}
+    val services_l:Array[Double] = Array.fill[Double](services.increments.length - l.toInt - 1){0.0}
     for ( i <- 0 until l.toInt ) {
       for (j <- 0 until arrivals_l.length ) {
         arrivals_l(j) += arrivals.increments(j+i)
       }
+    }
+    for ( i <- 0 to l.toInt ) {
       for (j <- 0 until services_l.length ) {
         services_l(j) += services.increments(j+i)
       }
     }
     
-    var rhoa = Math.log( arrivals_l.map( x => Math.exp(-theta*x)).sum/arrivals_l.length ) / (-theta)
-    var rhos = Math.log( services_l.map( x => Math.exp(theta*x)).sum/services_l.length ) / theta
+    var rhoa = Math.log( arrivals_l.map( x => Math.exp(-theta*x)).sum/arrivals_l.length ) / (-theta*l)
+    var rhos = Math.log( services_l.map( x => Math.exp(theta*x)).sum/services_l.length ) / (theta*(l+1))
     //println("rhoa="+rhoa+"\trhos="+rhos)
-
+    
     var ct = 0;
     var found_intersection = false
     var last_theta = theta
@@ -422,22 +424,11 @@ object MgfAnalysis {
     //println("findIntersectionThetaBySlope("+l+")")
     
     var l_theta = 1e-10;
-    var r_theta = 1.0 - 1e-5;
+    var r_theta = 10.0 - 1e-5;
     var theta = l_theta;
     val intersection_threshold = 0.0001;
     val theta_progress_threshold = 1e-10;
     
-    // this could be done faster by decomposing logarithmically
-    val arrivals_l:Array[Double] = Array.fill[Double](arrivals.increments.length - l.toInt){0.0}
-    val services_l:Array[Double] = Array.fill[Double](services.increments.length - l.toInt){0.0}
-    for ( i <- 0 until l.toInt ) {
-      for (j <- 0 until arrivals_l.length ) {
-        arrivals_l(j) += arrivals.increments(j+i)
-      }
-      for (j <- 0 until services_l.length ) {
-        services_l(j) += services.increments(j+i)
-      }
-    }
     
     var mgfa = arrivals.computeMgf(l.toInt, l.toInt+l_window, -theta).map(_(2))
     var mgfs = services.computeMgf(l.toInt, l.toInt+l_window, theta).map(_(2))
@@ -461,10 +452,7 @@ object MgfAnalysis {
     while ((Math.abs(rhoa-rhos) > intersection_threshold) && (ct < 5000)) {
       mgfa = arrivals.computeMgf(l.toInt, l.toInt+l_window, -theta).map(_(2));
       mgfs = services.computeMgf(l.toInt, l.toInt+l_window, theta).map(_(2));
-      
-      val mma = arrivals_l.map( x => Math.exp(-theta*x)).sum/arrivals_l.length
-      val mms = services_l.map( x => Math.exp(theta*x)).sum/services_l.length
-      
+            
       if (mgfa.length < 10) {
         println("  mgfa.length < 10")
         r_theta = theta;
