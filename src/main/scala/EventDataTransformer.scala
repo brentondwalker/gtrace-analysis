@@ -26,21 +26,32 @@ object EventDataTransformer {
     val tmp = df.withColumn("arrive", when($"evtype" === 0, $"timestamp").otherwise(0))
           .withColumn("schedule", when($"evtype" === 1, $"timestamp").otherwise(0))
           .withColumn("finish", when($"evtype" === 4, $"timestamp").otherwise(0))
-          .withColumn("fail", when($"evtype" === 2 or $"evtype" === 3 or $"evtype" === 5 or $"evtype" === 6, $"timestamp").otherwise(0));
+          .withColumn("evict", when($"evtype" === 2, $"timestamp").otherwise(0))
+          .withColumn("fail", when($"evtype" === 3, $"timestamp").otherwise(0))
+          .withColumn("kill", when($"evtype" === 5, $"timestamp").otherwise(0))
+          .withColumn("lost", when($"evtype" === 6, $"timestamp").otherwise(0))
+          .withColumn("generalfailure", when($"evtype" === 2 or $"evtype" === 3 or $"evtype" === 5 or $"evtype" === 6, $"timestamp").otherwise(0));
     
      val taskds = tmp.groupBy("jobid", "taskix")
-          .agg(max("arrive").alias("arrive"),max("schedule").alias("schedule"),max("finish").alias("finish"),max("fail").alias("fail"))
-          .where($"arrive" > 0 and $"arrive" < $"schedule" and $"schedule" < $"finish" and $"fail" < $"schedule")
-          .withColumn("size", $"finish" - $"schedule")
-          .withColumn("waittime", $"schedule" - $"arrive")
+          .agg(max("arrive").alias("arrive"),
+               max("schedule").alias("schedule"),
+               max("finish").alias("finish"),
+               max("evict").alias("evict"),
+               max("fail").alias("fail"),
+               max("kill").alias("kill"),
+               max("lost").alias("lost"),
+               max("generalfailure").alias("generalfailure"))
+          .where($"arrive" > 0 and ($"schedule"===0 or  $"arrive" < $"schedule") and ($"finish"===0 or $"schedule" < $"finish"))
+          .withColumn("size", when($"schedule" <= $"finish", ($"finish" - $"schedule")).otherwise(-1))
+          .withColumn("waittime", when($"schedule" >= $"arrive", ($"schedule" - $"arrive")).otherwise(-1))
           .sort(asc("jobid"), asc("arrive"));
      
      if (join_metadata) {
-       val taskds2 = taskds.as("taskds").join(df.as("task_event_ds"), $"task_event_ds.jobid" === $"taskds.jobid" && $"task_event_ds.taskix" === $"taskds.taskix" && $"evtype" === 4);
-       return taskds2.select($"taskds.jobid", $"taskds.taskix", $"arrive", $"schedule", $"finish", $"fail", $"size", $"waittime", $"machineid", $"username", $"sclass", $"priority", $"cpureq", $"ramreq", $"hdreq");
+       val taskds2 = taskds.as("taskds").join(df.as("task_event_ds"), $"task_event_ds.jobid" === $"taskds.jobid" && $"task_event_ds.taskix" === $"taskds.taskix" && $"evtype" === 0);
+       return taskds2.select($"taskds.jobid", $"taskds.taskix", $"arrive", $"schedule", $"finish", $"evict", $"fail", $"kill", $"lost", $"generalfailure", $"size", $"waittime", $"machineid", $"username", $"sclass", $"priority", $"cpureq", $"ramreq", $"hdreq");
      }
      
-     return taskds;     
+     return taskds;
   }
   
   def transformJobData(spark: SparkSession, df: Dataset[Row], join_metadata:Boolean) : Dataset[Row] = {
@@ -52,18 +63,30 @@ object EventDataTransformer {
     val tmp = df.withColumn("arrive", when($"evtype" === 0, $"timestamp").otherwise(0))
           .withColumn("schedule", when($"evtype" === 1, $"timestamp").otherwise(0))
           .withColumn("finish", when($"evtype" === 4, $"timestamp").otherwise(0))
-          .withColumn("fail", when($"evtype" === 2 or $"evtype" === 3 or $"evtype" === 5 or $"evtype" === 6, $"timestamp").otherwise(0));
+          .withColumn("evict", when($"evtype" === 2, $"timestamp").otherwise(0))
+          .withColumn("fail", when($"evtype" === 3, $"timestamp").otherwise(0))
+          .withColumn("kill", when($"evtype" === 5, $"timestamp").otherwise(0))
+          .withColumn("lost", when($"evtype" === 6, $"timestamp").otherwise(0))
+          .withColumn("generalfailure", when($"evtype" === 2 or $"evtype" === 3 or $"evtype" === 5 or $"evtype" === 6, $"timestamp").otherwise(0));
     
      val jobds = tmp.groupBy("jobid")
-          .agg(max("arrive").alias("arrive"),max("schedule").alias("schedule"),max("finish").alias("finish"),max("fail").alias("fail"))
-          .where($"arrive" > 0 and $"arrive" < $"schedule" and $"schedule" < $"finish" and $"fail" < $"schedule")
-          .withColumn("size", $"finish" - $"schedule")
-          .withColumn("waittime", $"schedule" - $"arrive")
+          .agg(max("arrive").alias("arrive"),
+               max("schedule").alias("schedule"),
+               max("finish").alias("finish"),
+               max("evict").alias("evict"),
+               max("fail").alias("fail"),
+               max("kill").alias("kill"),
+               max("lost").alias("lost"),
+               max("generalfailure").alias("generalfailure"))
+          .where($"arrive" > 0 and ($"schedule"===0 or  $"arrive" < $"schedule") and ($"finish"===0 or $"schedule" < $"finish"))
+          .withColumn("size", when($"schedule" <= $"finish", ($"finish" - $"schedule")).otherwise(-1))
+          .withColumn("waittime", when($"schedule" >= $"arrive", ($"schedule" - $"arrive")).otherwise(-1))
           .sort(asc("arrive"));
      
      if (join_metadata) {
-       val jobds2 = jobds.as("jobds").filter("fail==0").join(df.as("job_event_ds"), $"job_event_ds.jobid" === $"jobds.jobid" && $"evtype" === 4 );
-       return jobds2.select($"jobds.jobid", $"jobds.arrive", $"jobds.schedule", $"jobds.finish", $"jobds.fail", $"jobds.size", $"jobds.waittime", $"job_event_ds.username", $"job_event_ds.sclass");
+       //val jobds2 = jobds.as("jobds").filter("fail==0").join(df.as("job_event_ds"), $"job_event_ds.jobid" === $"jobds.jobid" && $"evtype" === 4 );
+       val jobds2 = jobds.as("jobds").join(df.as("job_event_ds"), $"job_event_ds.jobid" === $"jobds.jobid" && $"evtype" === 0 );
+       return jobds2.select($"jobds.jobid", $"jobds.arrive", $"jobds.schedule", $"jobds.finish", $"jobds.evict", $"jobds.fail", $"jobds.kill", $"jobds.lost", $"jobds.generalfailure", $"jobds.size", $"jobds.waittime", $"job_event_ds.username", $"job_event_ds.sclass");
      }
      
      return jobds;
@@ -81,7 +104,7 @@ object EventDataTransformer {
   def joinTaskMetadata(spark:SparkSession, taskds:Dataset[Row], task_event_ds:Dataset[Row]): Dataset[Row] = {
     import spark.implicits._
     
-    val taskds2 = taskds.as("taskds").join(task_event_ds.as("task_event_ds"), $"task_event_ds.jobid" === $"taskds.jobid" && $"task_event_ds.taskix" === $"taskds.taskix" && $"evtype" === 4);
+    val taskds2 = taskds.as("taskds").join(task_event_ds.as("task_event_ds"), $"task_event_ds.jobid" === $"taskds.jobid" && $"task_event_ds.taskix" === $"taskds.taskix" && $"evtype" === 0);
     return taskds2.select($"taskds.jobid", $"taskds.taskix", $"arrive", $"schedule", $"finish", $"fail", $"size", $"waittime", $"machineid", $"username", $"sclass", $"priority", $"cpureq", $"ramreq", $"hdreq");
   }
   
@@ -93,8 +116,8 @@ object EventDataTransformer {
   def joinJobMetadata(spark:SparkSession, jobds:Dataset[Row], job_event_ds:Dataset[Row]): Dataset[Row] = {
     import spark.implicits._
     
-    val jobds2 = jobds.filter("fail==0").join(job_event_ds.as("job_event_ds"), $"job_event_ds.jobid" === $"jobds.jobid" && $"evtype" === 4 );
-    return jobds2.select($"jobds.jobid", $"jobds.arrive", $"jobds.schedule", $"jobds.finish", $"jobds.fail", $"jobds.size", $"jobds.waittime", $"job_event_ds.username", $"job_event_ds.sclass");
+    val jobds2 = jobds.filter("fail==0").join(job_event_ds.as("job_event_ds"), $"job_event_ds.jobid" === $"jobds.jobid" && $"evtype" === 0 );
+    return jobds2.select($"jobds.jobid", $"jobds.arrive", $"jobds.schedule", $"jobds.evict", $"jobds.fail", $"jobds.kill", $"jobds.lost", $"jobds.generalfailure", $"jobds.fail", $"jobds.size", $"jobds.waittime", $"job_event_ds.username", $"job_event_ds.sclass");
   }
   
   

@@ -8,7 +8,8 @@ import org.apache.spark.sql.expressions.Window
 import breeze.linalg.{sum => bsum, DenseMatrix, DenseVector}
 import breeze.stats.regression.leastSquares
 import scala.math.random
-
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions.row_number
 
 class IntertimeProcessData extends Serializable {
 
@@ -31,10 +32,11 @@ class IntertimeProcessData extends Serializable {
     val w = org.apache.spark.sql.expressions.Window.orderBy("arrive")
 
     // we want to take off the first inter-arrival time because it's relative to zero
-    val firstArrival = arrivals.agg(min("arrive")).head().getLong(0)
-    val interArrivals = arrivals.withColumn("interarrival",  col("arrive")-lag(col("arrive"), 1, 0).over(w)).filter($"arrive" > firstArrival).sort("arrive").select("interarrival")
+    //val firstArrival = arrivals.agg(min("arrive")).head().getLong(0)
+    //val interArrivals = arrivals.withColumn("interarrival",  col("arrive")-lag(col("arrive"), 1, 0).over(w)).filter($"arrive" > firstArrival).sort("arrive").select("interarrival")
+    val interArrivals = arrivals.withColumn("interarrival",  col("arrive")-lag(col("arrive"), 1, 0).over(w)).sort("arrive").select("interarrival")
     
-    raw_increments = interArrivals.collect().map( r => r.getLong(0) )
+    raw_increments = interArrivals.collect().map( r => r.getLong(0) ).drop(1)
     val increment_mean:Double = bsum(raw_increments)/raw_increments.length
     
     increments = raw_increments.map( x => x.toDouble/(lambda*increment_mean) )
@@ -47,11 +49,27 @@ class IntertimeProcessData extends Serializable {
   
   /**
    * take a service time process and normalize it to have a specific rate.
+   * 
+   * Earlier versions of this code would only take task zero, if its size
+   * exists.  This new version does the same as the python code, and takes
+   * the lowest-index task that finishes, even if it was not the lowest-index
+   * task submitted.
+   * 
+   * XXX the task sizes computed by the spark code are sometimes a little
+   *     larger than the ones computed by the old python code.  Not always, but
+   *     sometimes.  There are also occasionally datapoints missing.
+   *     This could happen if there are multiple finish events for a task?
    */
   def loadFirstTaskServiceData(spark:SparkSession, taskds:Dataset[Row], uname:String, mu:Double = 1.0): IntertimeProcessData = {
     is_arrival = false
 
-    val services = taskds.filter("username='"+uname+"'").filter("fail = 0").filter("taskix = 0").sort("arrive").select("size")
+    //val services = taskds.filter("username='"+uname+"'").filter("fail = 0").filter("taskix = 0").sort("arrive").select("size")
+    //taskds.filter("username='"+uname+"'").filter("size >= 0").groupBy("jobid").agg(min("taskix"))
+    //val services = taskds.filter("username='"+uname+"'").filter("taskix = 0").filter("size >= 0").sort("arrive").select("size")
+    val w = Window.partitionBy("jobid").orderBy(col("taskix")) //.asc())
+    val services = taskds.filter("username='"+uname+"'").filter("size >= 0")
+                         .withColumn("task_rank", row_number().over(w)).filter("task_rank=1")
+                         .sort("arrive")
     
     raw_increments = services.select("size").collect().map( r => r.getLong(0) )
     val increment_mean:Double = bsum(raw_increments)/raw_increments.length

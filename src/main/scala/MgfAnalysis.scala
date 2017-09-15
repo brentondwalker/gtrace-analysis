@@ -347,7 +347,7 @@ object MgfAnalysis {
         arrivals_l(j) += arrivals.increments(j+i)
       }
     }
-    for ( i <- 0 to l.toInt ) {
+    for ( i <- 0 to l.toInt ) {  // NOTE THE DIFFERENCE HERE!!!  "to"
       for (j <- 0 until services_l.length ) {
         services_l(j) += services.increments(j+i)
       }
@@ -371,8 +371,8 @@ object MgfAnalysis {
         println("  mms=infty")
         r_theta = theta;
       } else {
-        rhoa = Math.log( mma ) / (-theta);
-        rhos = Math.log( mms ) / theta
+        rhoa = Math.log( mma ) / (-theta*l);
+        rhos = Math.log( mms ) / (theta*(l+1))
         
         if (rhos > rhoa) {
           println("  rhos > rhoa")
@@ -434,14 +434,14 @@ object MgfAnalysis {
     var mgfs = services.computeMgf(l.toInt, l.toInt+l_window, theta).map(_(2))
     
     // now use regression (??) to estimate the slope over the window
-    var indepa = DenseMatrix.tabulate(mgfa.length,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+    var indepa = DenseMatrix.tabulate(mgfa.length,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }  // are these both off by one?
     var depa = DenseVector(mgfa);
     var rhoa = leastSquares(indepa, depa).coefficients.data(1)
 
-    var indeps = DenseMatrix.tabulate(mgfs.length,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+    var indeps = DenseMatrix.tabulate(mgfs.length,2){ case(i,j) => if (j==0) 1.0 else (i-1).toDouble }
     var deps = DenseVector(mgfs);
     var rhos = leastSquares(indeps, deps).coefficients.data(1)
-
+    
     //var rhoa = Math.log( arrivals_l.map( x => Math.exp(-theta*x)).sum/arrivals_l.length ) / (-theta)
     //var rhos = Math.log( services_l.map( x => Math.exp(theta*x)).sum/services_l.length ) / theta
     //println("rhoa="+rhoa+"\trhos="+rhos)
@@ -465,7 +465,7 @@ object MgfAnalysis {
         depa = DenseVector(mgfa);
         rhoa = leastSquares(indepa, depa).coefficients.data(1);
 
-        indeps = DenseMatrix.tabulate(mgfs.length,2){ case(i,j) => if (j==0) 1.0 else i.toDouble }
+        indeps = DenseMatrix.tabulate(mgfs.length,2){ case(i,j) => if (j==0) 1.0 else (i-1).toDouble }
         deps = DenseVector(mgfs);
         rhos = leastSquares(indeps, deps).coefficients.data(1)
         
